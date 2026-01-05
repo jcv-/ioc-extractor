@@ -25,6 +25,7 @@ IPV4_PATTERN = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
 IPV6_PATTERN = re.compile(r'\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b')
 EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
 DOMAIN_PATTERN = re.compile(r'\b[a-zA-Z0-9-]+\.[a-zA-Z]{2,}\b')
+URL_PATTERN = re.compile(r'https?://[^\s\'"<]+')
 CRYPTO_WALLET_PATTERN = re.compile(r'\b(bc(0([ac-hj-np-z02-9]{39}|[ac-hj-np-z02-9]{59})|1[ac-hj-np-z02-9]{8,87})|[13][a-km-zA-HJ-NP-Z1-9]{25,35})\b')
 FILE_NAME_PATTERN = re.compile(r'\b[\w\-]+\.(?:exe|dll|bat|vbs|js|cmd|ps1|py|pyw|pyc|pyd)\b', re.IGNORECASE)
 FILE_PATH_PATTERN = re.compile(r'\b[A-Za-z]:[\w\.\-\\]*\w+\b')
@@ -71,7 +72,7 @@ def get_tld_list():
         save_tlds_to_file(tlds, filename)
     return tlds
 
-def extract_iocs(text, tlds):
+def extract_iocs(text, tlds, urls=None):
     # Refang common defanging techniques
     text = text.replace('[.]', '.').replace('(.)', '.')
 
@@ -83,7 +84,8 @@ def extract_iocs(text, tlds):
         'emails': [],
         'crypto_wallets': [],
         'file_names': [],
-        'file_paths': []
+        'file_paths': [],
+        'urls': urls if urls else []
     }
 
     # Hashes
@@ -118,6 +120,10 @@ def extract_iocs(text, tlds):
             if tld in tlds:
                 iocs['domains'].append(domain.lower())
 
+    # URLs from text
+    url_matches = URL_PATTERN.findall(text)
+    iocs['urls'].extend(url_matches)
+
     # Crypto wallets
     crypto_matches = CRYPTO_WALLET_PATTERN.findall(text)
     iocs['crypto_wallets'].extend(crypto_matches)
@@ -132,9 +138,7 @@ def extract_iocs(text, tlds):
 
     # Remove duplicates
     for key in iocs:
-        if key == 'hashes':
-            iocs[key] = list(dict.fromkeys(iocs[key]))
-        elif key == 'ips':
+        if key in ('hashes', 'ips'):
             iocs[key] = list(dict.fromkeys(iocs[key]))
         else:
             iocs[key] = list(dict.fromkeys(iocs[key]))
@@ -156,6 +160,19 @@ def fetch_url_content(url):
         return text, True
     else:
         return response.text, False
+
+def extract_urls_from_html(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    urls = set()
+    for tag in soup.find_all(['a', 'link', 'area'], href=True):
+        href = tag['href']
+        if href.startswith(('http://', 'https://')):
+            urls.add(href)
+    for tag in soup.find_all(['form'], action=True):
+        action = tag['action']
+        if action.startswith(('http://', 'https://')):
+            urls.add(action)
+    return list(urls)
 
 def parse_html_to_text(html):
     soup = BeautifulSoup(html, 'html.parser')
@@ -213,19 +230,23 @@ def main():
     parser.add_argument('--output', help='Output file for csv or json')
     args = parser.parse_args()
 
+    print("Warning: This is a best effort extraction. Please check the original source for accuracy.")
+
     try:
         print("Loading TLD list...")
         tlds = get_tld_list()
         print("Fetching content...")
         content, is_pdf = fetch_url_content(args.url)
         if is_pdf:
+            urls = []
             text = content
             print("Extracted text from PDF...")
         else:
+            urls = extract_urls_from_html(content)
             text = parse_html_to_text(content)
             print("Parsed HTML to text...")
         print("Extracting IOCs...")
-        iocs = extract_iocs(text, tlds)
+        iocs = extract_iocs(text, tlds, urls)
 
         if args.format == 'stdout':
             output_stdout(iocs)
@@ -241,6 +262,9 @@ def main():
             output_json(iocs, args.output)
         elif args.format == 'raw':
             output_raw(iocs)
+
+        total_iocs = sum(len(items) for items in iocs.values())
+        print(f"Total IOCs found: {total_iocs}")
 
     except Exception as e:
         print(f"Error: {e}")
