@@ -1,7 +1,7 @@
 [project]
 name = "ioc-extractor"
 version = "0.1.0"
-description = "Add your description here"
+description = "Simple tool to extract IOCs from a webpage to be used in other tools."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
