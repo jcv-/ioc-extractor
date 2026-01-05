@@ -1,6 +1,8 @@
 import requests
 from bs4 import BeautifulSoup
 import re
+import pdfplumber
+import io
 import argparse
 import json
 import csv
@@ -25,7 +27,7 @@ EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b
 DOMAIN_PATTERN = re.compile(r'\b[a-zA-Z0-9-]+\.[a-zA-Z]{2,}\b')
 CRYPTO_WALLET_PATTERN = re.compile(r'\b(bc(0([ac-hj-np-z02-9]{39}|[ac-hj-np-z02-9]{59})|1[ac-hj-np-z02-9]{8,87})|[13][a-km-zA-HJ-NP-Z1-9]{25,35})\b')
 FILE_NAME_PATTERN = re.compile(r'\b[\w\-]+\.(?:exe|dll|bat|vbs|js|cmd|ps1|py|pyw|pyc|pyd)\b', re.IGNORECASE)
-FILE_PATH_PATTERN = re.compile(r'\b(?:[A-Za-z]:[\w\.\-\\]*\w+|/\w+/\w+)\b')
+FILE_PATH_PATTERN = re.compile(r'\b[A-Za-z]:[\w\.\-\\]*\w+\b')
 
 def load_tlds_from_file(filename):
     with open(filename, 'r') as f:
@@ -142,7 +144,18 @@ def extract_iocs(text, tlds):
 def fetch_url_content(url):
     response = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=10)
     response.raise_for_status()
-    return response.text
+    content_type = response.headers.get('content-type', '').lower()
+    if 'application/pdf' in content_type:
+        pdf_file = io.BytesIO(response.content)
+        with pdfplumber.open(pdf_file) as pdf:
+            text = ''
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + '\n'
+        return text, True
+    else:
+        return response.text, False
 
 def parse_html_to_text(html):
     soup = BeautifulSoup(html, 'html.parser')
@@ -203,9 +216,14 @@ def main():
     try:
         print("Loading TLD list...")
         tlds = get_tld_list()
-        print("Fetching webpage content...")
-        html = fetch_url_content(args.url)
-        text = parse_html_to_text(html)
+        print("Fetching content...")
+        content, is_pdf = fetch_url_content(args.url)
+        if is_pdf:
+            text = content
+            print("Extracted text from PDF...")
+        else:
+            text = parse_html_to_text(content)
+            print("Parsed HTML to text...")
         print("Extracting IOCs...")
         iocs = extract_iocs(text, tlds)
 
